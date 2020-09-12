@@ -1,0 +1,53 @@
+- name: Delete a Rancher Cluster
+  hosts: "{{ rancher_clustername }}"
+  gather_facts: yes
+  vars_files:
+    - vars/vmware_vars.yaml
+    - vars/rancher_vars.yaml
+    - vars/docker_vars.yaml
+
+  tasks:
+
+    - name: Provision k8s cluster in Rancher
+      vars:
+        rancher_cluster_state: absent
+      include_role:
+        name: alexismaior.ansible_role_manage_rancher_cluster
+
+    - name: Set VM tag {{ rancher_clustername }} to 'available'
+      vmware_tag_manager:
+        hostname: '{{ vmware_vm_provisioning_hostname }}'
+        username: '{{ vmware_vm_provisioning_username }}'
+        password: '{{ vmware_vm_provisioning_password }}'
+        validate_certs: no
+        tag_names:
+          - Rancher:available
+        object_name: "{{ inventory_hostname|upper }}"
+        object_type: VirtualMachine
+        state: set
+      delegate_to: localhost
+
+
+    - name: Delete vmware tag with cluster name
+      vmware_tag:
+        hostname: '{{ vmware_vm_provisioning_hostname }}'
+        username: '{{ vmware_vm_provisioning_username }}'
+        password: '{{ vmware_vm_provisioning_password }}'
+        validate_certs: no
+        category_id: 'urn:vmomi:InventoryServiceCategory:1862366f-2a29-4f04-9d19-6a77312ec695:GLOBAL'
+        tag_name: "{{ rancher_clustername }}"
+        tag_description: Tag para o cluster {{ rancher_clustername }}
+        state: absent
+      run_once: true
+      delegate_to: localhost
+
+    - name: Delete dns entry for cluster
+      delegate_to: psdc01.sof.intra
+      run_once: true
+      ignore_errors: yes
+      win_dns_record:
+        computer_name: psdc01.sof.intra
+        name: "{{ rancher_clustername }}.{{ rancher_cluster_url_base}}"
+        type: "A"
+        zone: "sof.intra"
+        state: absent

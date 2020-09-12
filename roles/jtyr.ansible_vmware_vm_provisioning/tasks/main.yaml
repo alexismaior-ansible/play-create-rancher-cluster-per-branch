@@ -1,0 +1,8 @@
+---
+
+- name: Provision VMs
+  include_tasks: vm.yaml
+  with_items: "{{ vmware_vm_provisioning_vms | selectattr('name', 'equalto', inventory_hostname) | list }}"
+  loop_control:
+    loop_var: vm
+  no_log: "{{ not vmware_vm_provisioning_force_show_log }}"

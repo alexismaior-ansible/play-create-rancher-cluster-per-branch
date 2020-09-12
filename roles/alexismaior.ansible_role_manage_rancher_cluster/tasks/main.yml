@@ -1,0 +1,174 @@
+---
+  - name: Check if cluster already exists
+    delegate_to: 127.0.0.1
+    run_once: true
+    uri:
+      url: https://{{ rancher_host }}/v3/clusters/?name={{ rancher_clustername }}
+      user: "{{ rancher_user }}"
+      password: "{{ rancher_password }}"
+      method: GET
+      validate_certs: no
+      force_basic_auth: yes
+      return_content: no
+    register: query_rancher_response
+
+  - name: Create k8s cluster on rancher
+    delegate_to: 127.0.0.1
+    run_once: true
+    vars:
+      jmesquery: "data[0].name"
+    uri:
+      url: https://{{ rancher_host }}/v3/clusters
+      user: "{{ rancher_user }}"
+      password: "{{ rancher_password }}"
+      method: POST
+      body_format: json
+      body: { 'clusterTemplateRevisionId': 'cattle-global-data:{{ rancher_cluster_template_id }}', 'name': '{{ rancher_clustername }}' }
+      validate_certs: no
+      force_basic_auth: yes
+      return_content: no
+      status_code: 201
+    register: rancher_cluster
+    when: (query_rancher_response.json | json_query(jmesquery) != rancher_clustername and rancher_cluster_state == "present")
+
+  - name: Create cluster token
+    delegate_to: 127.0.0.1
+    run_once: true
+    vars:
+      jmesquery: "data[0].name"
+    uri:
+      url: https://{{ rancher_host }}/v3/clusterregistrationtokens
+      user: "{{ rancher_user }}"
+      password: "{{ rancher_password }}"
+      method: POST
+      body_format: json
+      body: "{ 'clusterId': '{{ rancher_cluster.json | json_query('id') }}' }"
+      validate_certs: no
+      force_basic_auth: yes
+      return_content: no
+      status_code: 201
+    register: cluster_token
+    when: (query_rancher_response.json | json_query(jmesquery) != rancher_clustername and rancher_cluster_state == "present")
+
+  - name: Get clusterID
+    delegate_to: 127.0.0.1
+    run_once: true
+    uri:
+      url: https://{{ rancher_host }}/v3/clusters/?name={{ rancher_clustername }}
+      user: "{{ rancher_user }}"
+      password: "{{ rancher_password }}"
+      method: GET
+      validate_certs: no
+      force_basic_auth: yes
+      return_content: no
+    register: cluster_info
+
+  - name: create fact for clusterid
+    set_fact:
+      clusterid: "{{ cluster_info.json | json_query('data[0].id') }}"
+
+  - name: Get actual cluster nodes
+    delegate_to: 127.0.0.1
+    run_once: true
+    uri:
+      url: https://{{ rancher_host }}/v3/nodes
+      user: "{{ rancher_user }}"
+      password: "{{ rancher_password }}"
+      method: GET
+      force_basic_auth: yes
+      return_content: yes
+      validate_certs: no
+    register: cluster_nodes
+
+  - name: create fact for already added_nodes list
+    set_fact:
+      added_nodes: "{{ cluster_nodes.json |json_query(jmesquery)}}"
+    vars:
+      jmesquery: "data[?clusterId=='{{ clusterid }}'].nodeName"
+
+  - name: Get kubeconfig file
+    delegate_to: 127.0.0.1
+    run_once: true
+    uri:
+      url: https://{{ rancher_host }}/v3/clusters/{{ clusterid }}?action=generateKubeconfig
+      user: "{{ rancher_user }}"
+      password: "{{ rancher_password }}"
+      method: POST
+      validate_certs: no
+      force_basic_auth: yes
+      return_content: no
+    register: cluster_kubeconfig
+
+  - name: create fact for kubeconfig
+    set_fact:
+      kubeconfig: "{{ cluster_kubeconfig.json |json_query('config') }}"
+
+  - name: Get Add Node command
+    delegate_to: 127.0.0.1
+    run_once: true
+    uri:
+      url: https://{{ rancher_host }}/v3/clusterregistrationtoken
+      user: "{{ rancher_user }}"
+      password: "{{ rancher_password }}"
+      method: GET
+      force_basic_auth: yes
+      return_content: yes
+      validate_certs: no
+    register: rancher_command
+    when: rancher_cluster_state == "present"
+
+  - name: define command roles var
+    set_fact:
+      rancher_cluster_roles: "--{{ rancher_cluster_roles | join(' --') }}"
+    when: rancher_cluster_state == "present"
+
+  - name: Add nodes on Rancher Cluster
+    vars:
+      jmesquery: "data[?clusterId=='{{ clusterid }}'].nodeCommand"
+    shell: "{{ rancher_command.json | json_query(jmesquery) |first}} {{ rancher_cluster_roles }} "
+    when: (inventory_hostname|upper not in added_nodes|upper and rancher_cluster_state == "present")
+
+  - name: Wait for cluster to come up
+    delegate_to: 127.0.0.1
+    run_once: true
+    uri:
+      url: "https://{{ rancher_host }}/v3/clusters/{{ clusterid }}"
+      user: "{{ rancher_user }}"
+      password: "{{ rancher_password }}"
+      force_basic_auth: yes
+      status_code: 200
+      method: GET
+      validate_certs: no
+    register: result
+    until: result.json.state.find("active") != -1
+    retries: 100
+    delay: 10
+    when: (rancher_cluster_state == 'present')
+
+  - name: Delete Cluster
+    delegate_to: 127.0.0.1
+    run_once: true
+    vars:
+      jmesquery: "data[0].name"
+    uri:
+      url: https://{{ rancher_host }}/v3/clusters/{{ clusterid }}
+      user: "{{ rancher_user }}"
+      password: "{{ rancher_password }}"
+      method: DELETE
+      force_basic_auth: yes
+      return_content: yes
+      validate_certs: no
+    register: rancher_command
+    when: (query_rancher_response.json | json_query(jmesquery) == rancher_clustername and rancher_cluster_state == "absent")
+
+  - name: Clean nodes after deletion
+    vars:
+      jmesquery: "data[0].name"
+    script: files/clean-up.sh
+    when: (query_rancher_response.json | json_query(jmesquery) == rancher_clustername and rancher_cluster_state == "absent")
+
+  - name: Reboot nodes after clean-up
+    vars:
+      jmesquery: "data[0].name"
+    reboot:
+    when: (query_rancher_response.json | json_query(jmesquery) == rancher_clustername and rancher_cluster_state == "absent")

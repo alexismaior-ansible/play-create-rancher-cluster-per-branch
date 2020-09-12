@@ -1,0 +1,12 @@
+rancher_host: console.app.sof.intra
+rancher_clustername: dev-default
+rancher_cluster_url_base: dev
+rancher_cluster_template_id: ctr-xtjp5
+rancher_cluster_roles: ["controlplane","etcd","worker"]
+rancher_cluster_state: present
+rancher_user: token-6k8v9 #drone_deployer
+rancher_password:
+prod_clusterid: c-bdl8h
+repo_username: admin
+repo_password: 
+helm_version: '3.2.4'

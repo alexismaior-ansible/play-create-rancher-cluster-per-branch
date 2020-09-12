@@ -1,0 +1,186 @@
+- name: Create Rancher Cluster
+  hosts: "{{ rancher_clustername if (rancher_clustername in groups) else 'available[0:2]' }}"
+  gather_facts: no
+  vars_files:
+    - vars/vmware_vars.yaml
+    - vars/rancher_vars.yaml
+    - vars/docker_vars.yaml
+
+  tasks:
+    - name: Check if nodes are up
+      delegate_to: 127.0.0.1
+      uri:
+        url: https://{{ ansible_host }}:6443
+        method: GET
+        validate_certs: no
+        return_content: no
+        status_code: ["200","401"]
+      ignore_errors: yes
+      register: query_node_response
+
+#    - name: Provision VM
+#      include_role:
+#        name: jtyr.ansible_vmware_vm_provisioning
+#      when: query_node_response.status != 401
+
+#    - name: Wait for ssh connection
+#      wait_for_connection:
+#      when: query_node_response.status != 401
+
+    - name: Gathering gather_facts
+      setup:
+      when: query_node_response.status != 401
+
+    - name: Replace a resolv.conf 01
+      lineinfile:
+        path: /etc/resolv.conf
+        line: nameserver 172.27.3.5
+      when: query_node_response.status != 401
+
+    - name: Replace resolv.conf 02
+      lineinfile:
+        path: /etc/resolv.conf
+        line: search sof.intra
+      when: query_node_response.status != 401
+
+    - name: Install Docker
+      ignore_errors: yes
+      include_role:
+        name: ericsysmin.docker.docker
+      when: query_node_response.status != 401
+
+    - name: Install Helm
+      ignore_errors: yes
+      include_role:
+        name: gantsign.helm
+      when: query_node_response.status != 401
+
+    - name: Install Kubectl
+      ignore_errors: yes
+      include_role:
+        name: andrewrothstein.kubectl
+      when: query_node_response.status != 401
+
+    - name: Clean node before provisioning in new cluster
+      script: files/clean-up.sh
+      when: query_node_response.status != 401
+
+    - name: Provision k8s cluster in Rancher
+      include_role:
+        name: alexismaior.ansible_role_manage_rancher_cluster
+
+    - name: Create a vmware tag with cluster name
+      vmware_tag:
+        hostname: '{{ vmware_vm_provisioning_hostname }}'
+        username: '{{ vmware_vm_provisioning_username }}'
+        password: '{{ vmware_vm_provisioning_password }}'
+        validate_certs: no
+        category_id: 'urn:vmomi:InventoryServiceCategory:1862366f-2a29-4f04-9d19-6a77312ec695:GLOBAL'
+        tag_name: "{{ rancher_clustername }}"
+        tag_description: Tag para o cluster {{ rancher_clustername }}
+        state: present
+      run_once: true
+      delegate_to: localhost
+      when: query_rancher_response.json | json_query('data[0].name') != rancher_clustername
+
+    - name: Set tag {{ rancher_clustername }} to VMs
+      vmware_tag_manager:
+        hostname: '{{ vmware_vm_provisioning_hostname }}'
+        username: '{{ vmware_vm_provisioning_username }}'
+        password: '{{ vmware_vm_provisioning_password }}'
+        validate_certs: no
+        tag_names:
+          - Rancher:{{ rancher_clustername }}
+        object_name: "{{ name }}"
+        object_type: VirtualMachine
+        state: set
+      delegate_to: localhost
+      when: query_rancher_response.json | json_query('data[0].name') != rancher_clustername
+
+    - name: Copy new cluster kubeconfig
+      delegate_to: 127.0.0.1
+      copy:
+        content: "{{ kubeconfig }}"
+        dest: "{{ playbook_dir }}/files/kubeconfig"
+
+    - name: Create dns entry for cluster
+      delegate_to: psdc01.sof.intra
+      run_once: true
+      ignore_errors: yes
+      win_dns_record:
+        computer_name: psdc01.sof.intra
+        name: "{{ rancher_clustername }}.{{ rancher_cluster_url_base}}"
+        type: "A"
+        value: "{{ ansible_default_ipv4.address }}"
+        zone: "sof.intra"
+      when: query_node_response.status != 401
+
+    - name: Get production kubeconfig file
+      delegate_to: 127.0.0.1
+      run_once: true
+      uri:
+        url: https://{{ rancher_host }}/v3/clusters/{{ prod_clusterid }}?action=generateKubeconfig
+        user: "{{ rancher_user }}"
+        password: "{{ rancher_password }}"
+        method: POST
+        validate_certs: no
+        force_basic_auth: yes
+        return_content: no
+      register: prod_kubeconfig
+      when: query_rancher_response.json | json_query('data[0].name') != rancher_clustername
+
+    - name: Copy prod cluster kubeconfig
+      delegate_to: 127.0.0.1
+      copy:
+        content: "{{ prod_kubeconfig.json |json_query('config') }}"
+        dest: "{{ playbook_dir }}/files/prod_kubeconfig"
+      when: query_rancher_response.json | json_query('data[0].name') != rancher_clustername
+
+    - name: Add helm repo
+      run_once: true
+      command: helm repo add harbor https://harbor.app.sof.intra/chartrepo --username={{ repo_username }} --password={{ repo_password }} --insecure-skip-tls-verify
+      when: query_rancher_response.json | json_query('data[0].name') != rancher_clustername
+
+    - name: Copy kubeconfigs to remote host
+      copy:
+        src: files/
+        dest: files/
+      when: query_rancher_response.json | json_query('data[0].name') != rancher_clustername
+
+    - name: Add Group CODIN as Cluster Owner
+      delegate_to: 127.0.0.1
+      run_once: true
+      ignore_errors: yes
+      uri:
+        url: https://{{ rancher_host }}/v3/clusterroletemplatebindings
+        user: "{{ rancher_user }}"
+        password: "{{ rancher_password }}"
+        method: POST
+        body_format: json
+        body: "{ 'clusterId': '{{ rancher_cluster.json | json_query('id') }}', 'groupPrincipalId': 'activedirectory_group://CN=GG_CODIN,OU=Globais,OU=Grupos,OU=SOF,DC=sof,DC=intra', 'roleTemplateId': 'cluster-owner' }"
+        validate_certs: no
+        force_basic_auth: yes
+        return_content: no
+        status_code: 201
+      register: cluster_token
+      when: query_rancher_response.json | json_query('data[0].name') != rancher_clustername
+
+    - name: Clone staging to new cluster
+      run_once: true
+      script: files/createTestEnv.sh -n siop -p files/prod_kubeconfig -t files/kubeconfig -r harbor -i {{ rancher_clustername }}.{{ rancher_cluster_url_base}}.sof.intra -c files/casof.crt -f true
+      register: script_ouptput
+      when: query_rancher_response.json | json_query('data[0].name') != rancher_clustername
+
+    - name: send a message to telegram chat in playbook
+      run_once: True
+      ignore_errors: yes
+      delegate_to: 127.0.0.1
+      telegram:
+        token: '1170484860:AAHRZ1AYI0knUaYrpc6EXoswoEdXZR7FclA'
+        chat_id: -263690973
+        msg: |
+          O cluster {{ rancher_clustername }} está pronto!
+          Já foi realizado um clone do ambiente de staging para o namespace siop.
+          Agora, vá na pagina do cluster em "Projects/Namespace" e mova este namespace para o seu projeto.
+          A URL do seu cluster é https://{{ rancher_clustername }}.{{ rancher_cluster_url_base}}.sof.intra
+      when: query_rancher_response.json | json_query('data[0].name') != rancher_clustername

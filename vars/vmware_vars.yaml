@@ -1,0 +1,64 @@
+  #  ansible_python_interpreter: /usr/bin/python3
+    # Default login details
+    vmware_vm_provisioning_hostname: pvcn01.sof.intra
+    vmware_vm_provisioning_validate_certs: no
+    vmware_vm_provisioning_force_show_log: true
+    vmware_vm_provisioning_username: 
+    vmware_vm_provisioning_password:
+    # Default template
+    vmware_vm_provisioning_template: CentOS 7.8 - Docker Template
+
+    # Default HW configuration
+    vmware_vm_provisioning_hardware: &vmware_vm_provisioning_hardware
+      num_cpus: 4
+      memory_mb: 6144
+
+    # Disk configuration (size corresponds with the disk size from the template)
+    vmware_vm_provisioning_disk__image1: &vmware_vm_provisioning_disk__image1
+      size_gb: 10
+      autoselect_datastore: no
+      datastore: Storage_EMC_NL-SAS
+    vmware_vm_provisioning_disk__image2: &vmware_vm_provisioning_disk__image2
+      size_gb: 4
+      autoselect_datastore: no
+      datastore: Storage_EMC_NL-SAS
+    vmware_vm_provisioning_disk__image3: &vmware_vm_provisioning_disk__image3
+      size_gb: 6
+      autoselect_datastore: no
+      datastore: Storage_EMC_NL-SAS
+    vmware_vm_provisioning_disk__image4: &vmware_vm_provisioning_disk__image4
+      size_gb: 10
+      autoselect_datastore: no
+      datastore: Storage_EMC_NL-SAS
+    # Default list of disks
+    vmware_vm_provisioning_disk:
+      - "{{ vmware_vm_provisioning_disk__image1 }}"
+      - "{{ vmware_vm_provisioning_disk__image2 }}"
+      - "{{ vmware_vm_provisioning_disk__image3 }}"
+      - "{{ vmware_vm_provisioning_disk__image4 }}"
+
+    # Network configuration for MyNET1
+    vmware_vm_provisioning_networks__mynet1: &vmware_vm_provisioning_networks__mynet1
+      - name: PG_Atlas_Servico_Kubernets
+        netmask: 255.255.255.0
+        gateway: 192.168.22.1
+
+
+    # DC1 - Cluster1
+    vmware_vm_provisioning__dc1_cluster1: &vmware_vm_provisioning__dc1_cluster1
+      datacenter: SOF
+      cluster: Blade_Kratos
+      folder: /Kubernetes
+
+
+    # List of VMs to provision
+    vmware_vm_provisioning_vms:
+      # First VM
+      - <<: *vmware_vm_provisioning__dc1_cluster1
+        name: "{{ inventory_hostname }}"
+        networks:
+          # Include the default network configuration
+          - <<: *vmware_vm_provisioning_networks__mynet1
+            # And jsut add the IP
+            ip: "{{ ansible_host }}"
+        state: poweredon

@@ -1,0 +1,23 @@
+plugin: community.vmware.vmware_vm_inventory
+strict: False
+hostname: pvcn01.sof.intra
+username: alexism@sof.intra
+password: sixelasixela
+validate_certs: False
+with_tags: True
+root_container: 'Kubernetes'
+root_container_type: 'folder'
+root_container_recurse: True
+hostnames:
+- config.name
+keyed_groups:
+- key: tags
+  separator: ''
+filters:
+- runtime.powerState == "poweredOn"
+resources:
+- datacenter:
+  - SOF
+  resources:
+  - folder:
+    - dev
